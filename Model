@@ -1,0 +1,325 @@
+import tensorflow as tf
+import os
+import random
+import numpy as np 
+from tqdm import tqdm 
+from skimage.io import imread, imshow
+from skimage.transform import resize
+import matplotlib.pyplot as plt
+import glob
+import cv2
+import pickle
+import pywt
+import math
+from PIL import Image
+from tensorflow.keras.utils import to_categorical, Sequence
+from tensorflow.keras.preprocessing.image import load_img, img_to_array
+from tensorflow.keras.models import Model, Sequential
+from tensorflow.keras.layers import Input, Conv2D,AveragePooling2D, MaxPooling2D, Dense, Flatten, BatchNormalization, Activation, Dropout, Lambda, GlobalAveragePooling2D, GaussianNoise, Reshape
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, LearningRateScheduler, ReduceLROnPlateau
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
+from tensorflow.keras.optimizers import Adam, SGD, RMSprop
+from tensorflow.keras.applications.vgg19 import VGG19
+from tensorflow.keras.applications.resnet50 import ResNet50
+from sklearn.metrics import classification_report,confusion_matrix
+import tensorflow.keras.backend as K
+import matplotlib.pyplot as plt
+import tensorflow as tf
+from keras.layers import Layer
+from tensorflow.keras.utils import normalize
+import splitfolders
+
+#Convolution block
+
+def conv_block(inputs,num_filters):
+    x_init=input
+    x=Conv2D(num_filters,3,padding="same")(inputs)
+    x=BatchNormalization()(x)
+    x=Activation("relu")(x)
+    x=Conv2D(num_filters,3,padding="same")(x)
+    x=BatchNormalization()(x)
+    x=Activation("relu")(x)
+    s=Conv2D(num_filters,1,padding="same")(x_init)
+    s=BatchNormalization()(s)
+    x=Add()([x, s])
+    x=Activation("relu")(x)
+    print(f'x_conv:{x.shape}')
+    return x
+
+def MDCB(inputs,num_filters,strides):
+    x_1=Conv1D(num_filters,3,strides=strides,dilation_rate=(1),padding="same")(inputs)    
+    x_1=BatchNormalization()(x_1)
+    x_1=Activation("relu")(x_1)
+    x_2=Conv1D(num_filters,3,strides=strides,dilation_rate=(3),padding="same")(inputs)  
+    x_2=BatchNormalization()(x_2)
+    x_2=Activation("relu")(x_2)
+    x_3=Conv1D(num_filters,3,strides=strides,dilation_rate=(6),padding="same")(inputs)      
+    x_3=BatchNormalization()(x_3)
+    x_3=Activation("relu")(x_3)
+    x_4=Conv1D(num_filters,3,strides=strides,dilation_rate=(9),padding="same")(inputs)    
+    x_4=BatchNormalization()(x_4)
+    x_4=Activation("relu")(x_4)
+    x_con=Concatenate()([x_1,x_2,x_3,x_4])
+    print(f'x_con.output:{x_con.shape}')
+    x_con=Conv2D(inputs.shape[3],7,padding="same",dilation_rate=1)(x_con) 
+    x_con=BatchNormalization()(x_con)
+    x_con=Activation("sigmoid")(x_con)
+    print(f'x_con.output:{x_con.shape}')
+    x_mul=multiply([inputs,x_con])
+    return x_mul
+
+from keras.layers import Concatenate
+
+def RMAB_2(x, filter):
+    shape = x.shape
+    y4 = Conv2D(filter, 3, dilation_rate=6, padding="same", use_bias=False)(x)
+    y4 = BatchNormalization()(y4)
+    y4 = Activation("relu")(y4)
+    y5 = Conv2D(filter, 3, dilation_rate=9, padding="same", use_bias=False)(x)
+    y5 = BatchNormalization()(y5)
+    y5 = Activation("relu")(y5)
+    y = Concatenate()([y4, y5])
+    y = Conv2D(filter, 1, dilation_rate=1, padding="same", use_bias=False)(y)
+    y = BatchNormalization()(y)
+    y = Activation("relu")(y)
+    return y
+
+def RMAB_1(x, filter):
+    shape = x.shape
+    y2 = Conv2D(filter, 3, dilation_rate=1, padding="same", use_bias=False)(x)
+    y2 = BatchNormalization()(y2)
+    y2 = Activation("relu")(y2)
+    y3 = Conv2D(filter, 3, dilation_rate=3, padding="same", use_bias=False)(x)
+    y3 = BatchNormalization()(y3)
+    y3 = Activation("relu")(y3)
+    y = Concatenate()([ y2, y3])
+    y = Conv2D(filter, 1, dilation_rate=1, padding="same", use_bias=False)(y)
+    y = BatchNormalization()(y)
+    y = Activation("relu")(y)
+    return y
+
+def d_conv(inputs,num_filters):
+    conv2_0=Conv2D(num_filters, (1, 1), padding="same")(inputs)
+    conv2_1=conv_block(conv2_0,num_filters)
+    conv2_2=conv_block(conv2_1,num_filters)
+    return conv2_2
+
+def t_conv(inputs,num_filters):
+    conv3_0=Conv2D(num_filters,(1, 1),padding="same")(inputs)
+    conv3_1=conv_block(conv3_0,num_filters)
+    conv3_2=conv_block(conv3_1,num_filters)
+    conv3_3=conv_block(conv3_2,num_filters)
+    return conv3_3
+
+def RMAB(inputs,num_filters):
+    conv1_0=Conv2D(num_filters, (1, 1), padding="same")(inputs)
+    conv1=conv_block(conv1_0,num_filters)
+    d1_conv=d_conv(inputs,num_filters)
+    d2_conv=t_conv(inputs,num_filters)
+    Asp1_0=Conv2D(num_filters, (1, 1), padding="same")(inputs)
+    Asp_1=RMAB_1(Asp1_0,num_filters)
+    Asp2_0=Conv2D(num_filters, (1, 1), padding="same")(inputs)
+    Asp_2=RMAB_2(Asp2_0,num_filters)
+    conv_0=Conv2D(num_filters, (1, 1), padding="same")(inputs)
+    Conv_1= Conv2D(num_filters,7,padding="same")(conv_0) 
+    Con_all=Concatenate()([conv1,Asp_1,Asp_2,Conv_1])
+    B=  BatchNormalization()(Con_all)
+    A = Activation("relu")(B)
+    return A 
+
+
+
+
+import keras
+import tensorflow as tf
+from keras.layers import multiply, Permute, Concatenate,Lambda,AveragePooling2D,MaxPooling2D,AveragePooling2D,GlobalAveragePooling2D,Add,Conv2D,Conv1D,GlobalMaxPooling2D,Reshape
+from keras import backend as K
+
+shared_conv_1 = Conv2D(filters=1, kernel_size=3, strides=1, dilation_rate=(1), padding="same")
+shared_conv_2 = Conv2D(filters=1, kernel_size=3, strides=1, dilation_rate=(3), padding="same")
+shared_conv_3 = Conv2D(filters=1, kernel_size=3, strides=1, dilation_rate=(6), padding="same")
+
+
+def DNCA(inputs):
+    
+    inputs = BatchNormalization()(inputs)
+    x1 = inputs
+    x2 = inputs
+    x3 = inputs
+    channel = inputs.shape[3]
+    
+   
+    avg_pool1, max_pool1 = global_pooling_2d(x1, shared_conv_1)
+    channel_feature1 = channel_attention(avg_pool1, max_pool1, x1)
+    print(f'channel_feature1_output:{channel_feature1.shape}')
+    x2 = tf.transpose(x2, perm=[0,1,3,2])
+    avg_pool2, max_pool2 = global_pooling_2d(x2, shared_conv_2)
+    channel_feature2 = channel_attention(avg_pool2, max_pool2, x2)
+    channel_feature2 = tf.transpose(channel_feature2, perm=[0,1,3,2])
+    print(f'channel_feature2_output:{channel_feature2.shape}')
+    x3 = tf.transpose(x3, perm=[0,3,2,1])
+    avg_pool3, max_pool3 = global_pooling_2d(x3, shared_conv_3)
+    channel_feature3 = channel_attention(avg_pool3, max_pool3, x3)
+    channel_feature3 = tf.transpose(channel_feature3, perm=[0,3,2,1])
+    print(f'channel_feature3_output:{channel_feature3.shape}')
+    output = Concatenate()([channel_feature1, channel_feature2, channel_feature3])
+    output = Conv2D(inputs.shape[-1], 1, padding='same', activation='sigmoid')(output)
+    output = Multiply()([inputs, output])
+    output = BatchNormalization()(output)
+    
+    return output
+
+def global_pooling_2d(x, shared_conv):
+    channel = x.shape[3]
+    print(f'x_global_pooling_2d:{x.shape}')
+    avg_pool = GlobalAveragePooling2D()(x)
+    avg_pool = Reshape((1, 1, channel))(avg_pool)
+    avg_pool = Permute((3, 1, 2))(avg_pool)
+    print(f'x_avg_pool:{avg_pool.shape}')
+    max_pool = GlobalMaxPooling2D()(x)
+    max_pool = Reshape((1, 1, channel))(max_pool)
+    max_pool = Permute((3, 1, 2))(max_pool)
+    print(f'x_max_pool:{max_pool.shape}')
+    avg_pool = shared_conv(avg_pool)
+    avg_pool = Permute((2, 3, 1))(avg_pool)
+    max_pool = shared_conv(max_pool)
+    max_pool = Permute((2, 3, 1))(max_pool)
+    
+    return avg_pool, max_pool
+
+def channel_attention(avg_pool, max_pool, x):
+    channel_feature = tf.concat([avg_pool, max_pool],3)
+    print(f'channel_feature_output:{channel_feature.shape}')
+    concat = Conv2D(1, 7, padding="same")(channel_feature)
+    bn = BatchNormalization()(concat)
+    channel_feature = Activation('sigmoid')(bn)
+    channel_feature = Multiply()([x, channel_feature])
+    return channel_feature
+
+
+
+
+from keras.layers import multiply
+
+def CSA(g, s, num_filters):
+    print(f'g_output:{g.shape} ')
+    print(f's_output:{s.shape} ')
+    # Upsample g if its spatial dimensions are smaller than s
+    if g.shape[1] < s.shape[1] or g.shape[2] < s.shape[2]:
+        g = tf.keras.layers.UpSampling2D(size=(2, 2), interpolation='bilinear')(g)
+    Wg = Conv2D(num_filters, 1, padding="same")(g)
+    Wg = BatchNormalization()(Wg)
+    Wg = Activation("sigmoid")(Wg)
+    print(f'wg_output:{Wg.shape} ')
+    Ws = Conv2D(num_filters, 1, padding="same")(s)
+    Ws = BatchNormalization()(Ws)
+    Ws = Activation("sigmoid")(Ws)
+    print(f'ws_output:{Ws.shape} ')
+    A_1 = (Wg + Ws)
+    p=  DNCA(A_1)
+    p = BatchNormalization()(p)
+    p = Activation('relu')(p)
+    EA_1 = tf.concat([p, s],axis=3)
+    p = Conv2D(num_filters, 3, padding="same")(EA_1)
+    p = BatchNormalization()(p)
+    p = Activation('relu')(p)
+    c = tf.concat([p, g],axis=3)
+    p = Conv2D(num_filters, 3, padding="same")(c)
+    p = BatchNormalization()(p)
+    p = Activation('relu')(p)
+    return p
+
+def decoder_block(inputs,skip,num_filters):
+    x_t=Conv2DTranspose(num_filters, (3, 3), strides=(2, 2), padding='same')(inputs)
+    print(f'transpose_output:{x_t.shape}') 
+    s = CSA(inputs,skip,num_filters) 
+    x = Concatenate()([x_t, s])
+    print(f'x_concatenetion:{x.shape}')
+    x = conv_block(x,num_filters) 
+    return  x
+def hybrid(input_shape):
+
+    #f = [32, 64, 128]
+    inputs = Input(shape=(input_shape), name="input_image")
+    lr = 1e-3
+
+    ## Encoder
+    encoder = EfficientNetB7(input_tensor=inputs, weights="imagenet", include_top=False)
+    encoder.summary()
+    s1=encoder.get_layer("input_image").output                                    #256
+    print(f's1_output:{s1.shape}')
+    s1 = Conv2D(8, (1, 1),padding="same")(s1)
+    s2=encoder.get_layer("block2a_expand_activation").output                      #128
+    print(f's2_output:{s2.shape}')
+    s2 = Conv2D(16, (1, 1), padding="same")(s2)
+    s3=encoder.get_layer("block3a_expand_activation").output                      #64
+    print(f's3_output:{s3.shape}')
+    s3 = Conv2D(32, (1, 1), padding="same")(s3)
+   # rf1=RMAB(s3,32)
+    rf1_1=MaxPooling2D(pool_size=(2, 2),padding='same')(s3) 
+    rf1_2=MaxPooling2D(pool_size=(4, 4),padding='same')(s3) 
+    s4=encoder.get_layer("block4a_expand_activation").output                      #32
+    print(f's4_output:{s4.shape}')
+    s4 = Conv2D(64, (1, 1), padding="same")(s4)
+  # rf2=RMAB(s4,64)
+    rf2_1=Conv2DTranspose(64, (3, 3), strides=(2, 2), padding='same')(s4)
+    rf2_2=MaxPooling2D(pool_size=(2, 2),padding='same')(s4)
+    bridge=encoder.get_layer("block6a_expand_activation").output                  #16
+    print(f'bridge_output:{bridge.shape}')
+    bridge = Conv2D(128, (1, 1), padding="same")(bridge)
+   #rf3=RMAB(bridge,128)
+    rf3_1=Conv2DTranspose(128, (3, 3), strides=(2, 2), padding='same')(bridge)
+    rf3_2=Conv2DTranspose(128, (3, 3), strides=(4, 4), padding='same')(bridge)
+    conrf1=Concatenate()([s3,rf2_1,rf3_2])  
+    conrf1=RMAB(conrf1,32)
+    conrf2=Concatenate()([rf1_1,s4,rf3_1])
+    conrf2=RMAB(conrf2,64)
+    conrf3=Concatenate()([rf1_2,rf2_2,bridge])
+    conrf3=RMAB(conrf3,128)
+  
+    ##Decoder
+    d1=decoder_block(conrf3,conrf2,64)
+    print(f'd1_output:{d1.shape}')
+    Output_1=Conv2D(1,1, padding="same",activation="sigmoid")(d1)
+    print(f'Output_1_output:{Output_1.shape}')
+    x_1_1=Conv2DTranspose(1, (3, 3), strides=(8, 8), padding='same')(Output_1)
+    print(f'x_1_1.output:{x_1_1.shape} ' )
+    x_1_2=Conv2DTranspose(1, (3, 3), strides=(4, 4), padding='same')(Output_1)
+    print(f'x_1_2.output:{x_1_2.shape} ' )
+    x_1_3=Conv2DTranspose(1, (3, 3), strides=(2, 2), padding='same')(Output_1)
+    print(f'x_1_3.output:{x_1_3.shape} ' )
+    d2=decoder_block(d1,conrf1,32)
+    print(f'd2_output:{d2.shape}')
+    Output_2=Conv2D(1,1, padding="same",activation="sigmoid")(d2)
+    print(f' Output_2:{ Output_2.shape}')
+    d2_c=Concatenate()([x_1_3,Output_2])
+    d2_c_t=Conv2DTranspose(1, (3, 3), strides=(4, 4), padding='same')(d2_c)
+    x_2_1=Conv2DTranspose(1, (3, 3), strides=(4, 4), padding='same')(Output_2)
+    print(f'x_2.output:{x_2_1.shape} ' )
+    x_2_2=Conv2DTranspose(1, (3, 3), strides=(2, 2), padding='same')(Output_2)
+    print(f'x_2.output:{x_2_2.shape} ' )
+    d3=decoder_block(d2,s2,16)
+    print(f'd3_output:{d3.shape}')
+    Output_3=Conv2D(1,1, padding="same",activation="sigmoid")(d3)
+    print(f'Output_3_output:{Output_3.shape}')
+    d3_c= Concatenate()([x_1_2,x_2_2,Output_3])
+    d3_c_t=Conv2DTranspose(1, (3, 3), strides=(2, 2), padding='same')(d3_c)
+    x_3_1=Conv2DTranspose(1, (3, 3), strides=(2, 2), padding='same')(Output_3)
+    print(f'x_3.output:{x_3_1.shape} ' )
+    d4=decoder_block(d3,s1,8)
+    print(f'd4_output:{d4.shape}')
+    Output_4=Conv2D(1,1, padding="same",activation="sigmoid")(d4)
+    print(f'Output_4_output:{Output_4.shape}')
+    d4_c=Concatenate()([Output_4,x_3_1,x_2_1,x_1_1])
+    ##Output
+    Output=Concatenate()([ x_1_1,d2_c_t,d3_c_t,d4_c])
+    skip=skip_conv(Output,128,1)
+    Output=Conv2D(1,1, padding="same",activation="sigmoid")(skip)
+    model=Model(inputs,Output,name="efficientB7_U_net")
+    model.compile(optimizer=tf.keras.optimizers.Adam(lr), loss='binary_crossentropy', metrics=['accuracy'])
+    
+    return model
+    
+
+
+
